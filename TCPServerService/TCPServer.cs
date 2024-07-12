@@ -1,27 +1,28 @@
-﻿using System.Net.Sockets;
-using System.Net;
-using System.Text;
-using System;
+﻿using System;
+using System.Collections.Concurrent;
 using System.Configuration;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace TCPServerService
 {
     internal class TCPServer
     {
-        string dataToBeRecived = ConfigurationManager.AppSettings["DataToBeRecived"];
-        string dataToBeSent = ConfigurationManager.AppSettings["DataToBeSent"];
-        string MissedData = ConfigurationManager.AppSettings["MissedData"];
-        public void start()
+        private int timeoutMinutes = 5; // Set the timeout duration in minutes
+        private ConcurrentDictionary<string, ClientInfo> connectedClients = new ConcurrentDictionary<string, ClientInfo>();
+
+        public byte[] response { get; private set; }
+
+        public void Start()
         {
-            // Set the IP address and port on which the server will listen
-            string ipAddress = "0.0.0.0"; // Use "0.0.0.0" to listen on all available network interfaces
+            string ipAddress = "0.0.0.0";
             int port = 8888;
 
-            // Create a TCP listener
             TcpListener listener = new TcpListener(IPAddress.Parse(ipAddress), port);
             listener.Start();
-
             Logger.WriteDebugLog($"Server is listening on {ipAddress}:{port}");
 
             while (true)
@@ -29,65 +30,83 @@ namespace TCPServerService
                 Logger.WriteDebugLog("Waiting for a connection...");
                 try
                 {
-                    TcpClient client = listener.AcceptTcpClient(); // Accept incoming client connections
-
+                    TcpClient client = listener.AcceptTcpClient();
                     Logger.WriteDebugLog($"Client connected! Local:{client.Client.LocalEndPoint} <-- Client:{client.Client.RemoteEndPoint}");
-
-                    // Handle the client connection in a separate thread
-                    System.Threading.Tasks.Task.Run(() => HandleClient(client));
+                    Task.Run(() => HandleClient(client));
                 }
                 catch (Exception ex)
                 {
                     Logger.WriteErrorLog(ex.Message);
                 }
-
             }
         }
 
-        void HandleClient(TcpClient client)
+        private void HandleClient(TcpClient client)
         {
-            Thread.CurrentThread.Name = client.Client.RemoteEndPoint.ToString();
-            using (NetworkStream stream = client.GetStream())
+            string clientIP = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
+            Logger.WriteDebugLog($"Client IP Address: {clientIP}");
+
+            ClientInfo clientInfo = new ClientInfo { Client = client, LastActivityTime = DateTime.Now };
+            connectedClients.TryAdd(clientIP, clientInfo);
+
+            try
             {
-                byte[] buffer = new byte[1024];
-                int bytesRead;
-
-                while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                using (NetworkStream stream = client.GetStream())
                 {
-                    // Convert the received bytes to a string
-                    string receivedData = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-                    if (receivedData == dataToBeRecived)
-                    {
-                        Logger.WriteDebugLog("Received: " + receivedData);
-                        Logger.WriteDebugLog("Data Matched");
-                        string responseData = "Server: " + dataToBeSent;
-                        byte[] responseBytes = Encoding.ASCII.GetBytes(responseData);
-                        stream.Write(responseBytes, 0, responseBytes.Length);
+                    byte[] buffer = new byte[1024];
+                    int bytesRead;
 
-                    }
-                    else
+                    while (true)
                     {
-                        Logger.WriteDebugLog("Received: " + receivedData);
-                        Logger.WriteDebugLog("Data Not Matched");
-                        string responseData = "Server: " + receivedData;
-                        byte[] responseBytes = Encoding.ASCII.GetBytes(responseData);
-                        stream.Write(responseBytes, 0, responseBytes.Length);
-                    }
+                        if (client.Available > 0)
+                        {
+                            bytesRead = stream.Read(buffer, 0, buffer.Length);
+                            if (bytesRead == 0) break;
+                            string receivedData = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+                            Logger.WriteDebugLog($"Received from {clientIP}: {receivedData}");
 
-                    //// Send a response back to the client
-                    //string responseData = "Server: " + receivedData;
-                    //byte[] responseBytes = Encoding.ASCII.GetBytes(responseData);
-                    //stream.Write(responseBytes, 0, responseBytes.Length);
+                            // Process received data here
+                            //Thread.Sleep(1000); // Simulate processing time
+
+                            // Send response
+                            if (receivedData.Equals("OK"))
+                            {
+                                response = Encoding.ASCII.GetBytes("NOT OK");
+                                stream.Write(response, 0, response.Length);
+                                Logger.WriteDebugLog($"Sent to {clientIP}: Server response");
+                            }
+                            response = Encoding.ASCII.GetBytes("OK");
+                            stream.Write(response, 0, response.Length);
+                            Logger.WriteDebugLog($"Sent to {clientIP}: Server response");
+
+                            clientInfo.LastActivityTime = DateTime.Now;
+                        }
+                        if (DateTime.Now - clientInfo.LastActivityTime > TimeSpan.FromMinutes(timeoutMinutes))
+                        {
+                            Logger.WriteDebugLog($"Client {clientIP} timed out. Closing connection.");
+                            client.Close();
+                            break;
+                        }
+                        Thread.Sleep(100); // Avoid tight loop
+                    }
                 }
-
-                // Client disconnected
-                Logger.WriteDebugLog("Client disconnected!");
-
-                // Clean up resources
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteErrorLog($"Error handling client {clientIP}: {ex.Message}");
+            }
+            finally
+            {
+                connectedClients.TryRemove(clientIP, out _);
                 client.Close();
+                Logger.WriteDebugLog($"Client {clientIP} disconnected!");
             }
         }
-
     }
 
+    internal class ClientInfo
+    {
+        public TcpClient Client { get; set; }
+        public DateTime LastActivityTime { get; set; }
+    }
 }

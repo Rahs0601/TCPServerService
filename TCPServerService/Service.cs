@@ -11,6 +11,7 @@ namespace TCPServerService
         private static readonly string appPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         private Thread thread = null;
         private bool running = false;
+
         protected override void OnStart(string[] args)
         {
             running = true;
@@ -34,12 +35,11 @@ namespace TCPServerService
         {
             try
             {
-
                 while (running)
                 {
                     //Create a TCP/IP Server Socket
                     TCPServer server = new TCPServer();
-                    server.start();
+                    server.Start();
                 }
             }
             catch (Exception ex)
@@ -47,6 +47,7 @@ namespace TCPServerService
                 Logger.WriteErrorLog(ex.Message);
             }
         }
+
         protected override void OnStop()
         {
             running = false;
@@ -57,16 +58,7 @@ namespace TCPServerService
 
         internal void OnDebug()
         {
-
             OnStart(null);
         }
     }
-
 }
-
-
-
-
-
-
-
